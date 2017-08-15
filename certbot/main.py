@@ -75,6 +75,11 @@ def _get_and_save_cert(le_client, config, domains=None, certname=None, lineage=N
             # interested in
             logger.info("Renewing an existing certificate")
             renewal.renew_cert(config, domains, le_client, lineage)
+
+            # In case of a renewal, we give the plugin the opportunity
+            # to handle the renewed certificate
+            le_client.renew_deploy_certificate(domains, lineage.privkey,
+                lineage.cert, lineage.chain, lineage.fullchain)
         else:
             # TREAT AS NEW REQUEST
             assert domains is not None
