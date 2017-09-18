@@ -121,7 +121,8 @@ class MultipleVhostsTest(util.ApacheTest):
 
     @certbot_util.patch_get_utility()
     def test_get_all_names(self, mock_getutility):
-        mock_getutility.notification = mock.MagicMock(return_value=True)
+        mock_utility = mock_getutility()
+        mock_utility.notification = mock.MagicMock(return_value=True)
         names = self.config.get_all_names()
         self.assertEqual(names, set(
             ["certbot.demo", "ocspvhost.com", "encryption-example.demo"]
@@ -131,9 +132,8 @@ class MultipleVhostsTest(util.ApacheTest):
     @mock.patch("certbot_apache.configurator.socket.gethostbyaddr")
     def test_get_all_names_addrs(self, mock_gethost, mock_getutility):
         mock_gethost.side_effect = [("google.com", "", ""), socket.error]
-        notification = mock.Mock()
-        notification.notification = mock.Mock(return_value=True)
-        mock_getutility.return_value = notification
+        mock_utility = mock_getutility()
+        mock_utility.notification.return_value = True
         vhost = obj.VirtualHost(
             "fp", "ap",
             set([obj.Addr(("8.8.8.8", "443")),
@@ -1497,7 +1497,7 @@ class InstallSslOptionsConfTest(util.ApacheTest):
         with mock.patch("certbot.plugins.common.logger") as mock_logger:
             self._call()
             self.assertEqual(mock_logger.warning.call_args[0][0],
-                "%s has been manually modified; updated ssl configuration options "
+                "%s has been manually modified; updated file "
                 "saved to %s. We recommend updating %s for security purposes.")
         self.assertEqual(crypto_util.sha256sum(constants.os_constant("MOD_SSL_CONF_SRC")),
             self._current_ssl_options_hash())

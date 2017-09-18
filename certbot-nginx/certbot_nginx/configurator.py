@@ -19,7 +19,6 @@ from certbot import crypto_util
 from certbot import errors
 from certbot import interfaces
 from certbot import util
-from certbot import reverter
 
 from certbot.plugins import common
 
@@ -63,7 +62,7 @@ TEST_REDIRECT_COMMENT_BLOCK = [
 
 @zope.interface.implementer(interfaces.IAuthenticator, interfaces.IInstaller)
 @zope.interface.provider(interfaces.IPluginFactory)
-class NginxConfigurator(common.Plugin):
+class NginxConfigurator(common.Installer):
     # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """Nginx configurator.
 
@@ -127,8 +126,6 @@ class NginxConfigurator(common.Plugin):
         self._enhance_func = {"redirect": self._enable_redirect,
                               "staple-ocsp": self._enable_ocsp_stapling}
 
-        # Set up reverter
-        self.reverter = reverter.Reverter(self.config)
         self.reverter.recovery_routine()
 
     @property
@@ -159,6 +156,8 @@ class NginxConfigurator(common.Plugin):
         self.parser = parser.NginxParser(self.conf('server-root'))
 
         install_ssl_options_conf(self.mod_ssl_conf, self.updated_mod_ssl_conf_digest)
+
+        self.install_ssl_dhparams()
 
         # Set Version
         if self.version is None:
@@ -236,7 +235,11 @@ class NginxConfigurator(common.Plugin):
         if not vhost:
             # No matches. Raise a misconfiguration error.
             raise errors.MisconfigurationError(
-                        "Cannot find a VirtualHost matching domain %s." % (target_name))
+                        ("Cannot find a VirtualHost matching domain %s. "
+                         "In order for Certbot to correctly perform the challenge "
+                         "please add a corresponding server_name directive to your "
+                         "nginx configuration: "
+                         "https://nginx.org/en/docs/http/server_names.html") % (target_name))
         else:
             # Note: if we are enhancing with ocsp, vhost should already be ssl.
             if not vhost.ssl:
@@ -448,11 +451,13 @@ class NginxConfigurator(common.Plugin):
 
         snakeoil_cert, snakeoil_key = self._get_snakeoil_paths()
 
-        ssl_block = (
-            [['\n    ', 'listen', ' ', '{0} ssl'.format(self.config.tls_sni_01_port)],
-             ['\n    ', 'ssl_certificate', ' ', snakeoil_cert],
-             ['\n    ', 'ssl_certificate_key', ' ', snakeoil_key],
-             ['\n    ', 'include', ' ', self.mod_ssl_conf]])
+        ssl_block = ([
+            ['\n    ', 'listen', ' ', '{0} ssl'.format(self.config.tls_sni_01_port)],
+            ['\n    ', 'ssl_certificate', ' ', snakeoil_cert],
+            ['\n    ', 'ssl_certificate_key', ' ', snakeoil_key],
+            ['\n    ', 'include', ' ', self.mod_ssl_conf],
+            ['\n    ', 'ssl_dhparam', ' ', self.ssl_dhparams],
+        ])
 
         self.parser.add_server_directives(
             vhost, ssl_block, replace=False)
@@ -693,31 +698,13 @@ class NginxConfigurator(common.Plugin):
 
         """
         save_files = set(self.parser.parsed.keys())
-
-        try:  # TODO: make a common base for Apache and Nginx plugins
-            # Create Checkpoint
-            if temporary:
-                self.reverter.add_to_temp_checkpoint(
-                    save_files, self.save_notes)
-                # how many comments does it take
-            else:
-                self.reverter.add_to_checkpoint(save_files,
-                                            self.save_notes)
-                # to confuse a linter?
-        except errors.ReverterError as err:
-            raise errors.PluginError(str(err))
-
+        self.add_to_checkpoint(save_files, self.save_notes, temporary)
         self.save_notes = ""
 
         # Change 'ext' to something else to not override existing conf files
         self.parser.filedump(ext='')
         if title and not temporary:
-            try:
-                self.reverter.finalize_checkpoint(title)
-            except errors.ReverterError as err:
-                raise errors.PluginError(str(err))
-
-        return True
+            self.finalize_checkpoint(title)
 
     def recovery_routine(self):
         """Revert all previously modified files.
@@ -727,10 +714,7 @@ class NginxConfigurator(common.Plugin):
         :raises .errors.PluginError: If unable to recover the configuration
 
         """
-        try:
-            self.reverter.recovery_routine()
-        except errors.ReverterError as err:
-            raise errors.PluginError(str(err))
+        super(NginxConfigurator, self).recovery_routine()
         self.parser.load()
 
     def revert_challenge_config(self):
@@ -739,10 +723,7 @@ class NginxConfigurator(common.Plugin):
         :raises .errors.PluginError: If unable to revert the challenge config.
 
         """
-        try:
-            self.reverter.revert_temporary_config()
-        except errors.ReverterError as err:
-            raise errors.PluginError(str(err))
+        self.revert_temporary_config()
         self.parser.load()
 
     def rollback_checkpoints(self, rollback=1):
@@ -754,23 +735,8 @@ class NginxConfigurator(common.Plugin):
             the function is unable to correctly revert the configuration
 
         """
-        try:
-            self.reverter.rollback_checkpoints(rollback)
-        except errors.ReverterError as err:
-            raise errors.PluginError(str(err))
+        super(NginxConfigurator, self).rollback_checkpoints(rollback)
         self.parser.load()
-
-    def view_config_changes(self):
-        """Show all of the configuration changes that have taken place.
-
-        :raises .errors.PluginError: If there is a problem while processing
-            the checkpoints directories.
-
-        """
-        try:
-            self.reverter.view_config_changes()
-        except errors.ReverterError as err:
-            raise errors.PluginError(str(err))
 
     ###########################################################################
     # Challenges Section for IAuthenticator
@@ -860,5 +826,5 @@ def nginx_restart(nginx_ctl, nginx_conf):
 
 def install_ssl_options_conf(options_ssl, options_ssl_digest):
     """Copy Certbot's SSL options file into the system's config dir if required."""
-    return common.install_ssl_options_conf(options_ssl, options_ssl_digest,
+    return common.install_version_controlled_file(options_ssl, options_ssl_digest,
         constants.MOD_SSL_CONF_SRC, constants.ALL_SSL_OPTIONS_HASHES)
